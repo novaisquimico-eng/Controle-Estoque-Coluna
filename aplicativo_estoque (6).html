@@ -1,0 +1,1213 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sistema de Controle de Estoque com LocalStorage (Persistente no Navegador)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/lucide-react@0.263.1/dist/umd/lucide-react.min.js"></script>
+  <style>
+    body { background-color: #f3f4f6; font-family: system-ui, -apple-system, sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+    const Lucide = window.lucideReact || {};
+    
+    const Icon = ({ name, size = 18, className = "" }) => {
+      const IconComponent = Lucide[name];
+      if (!IconComponent) return <span className="inline-block w-4 h-4 bg-gray-300 rounded" />;
+      return <IconComponent size={size} className={className} />;
+    };
+
+    const ROLES = {
+      ADMIN: { id: 'ADMIN', name: 'Administrador', canManageUsers: true, canAdd: true, canExit: true },
+      ALMOXARIFE: { id: 'ALMOXARIFE', name: 'Almoxarife', canManageUsers: false, canAdd: true, canExit: true },
+      TECNICO: { id: 'TECNICO', name: 'Técnico', canManageUsers: false, canAdd: false, canExit: true },
+      LEITOR: { id: 'LEITOR', name: 'Leitor (Apenas Consulta)', canManageUsers: false, canAdd: false, canExit: false }
+    };
+
+    const DEFAULT_USERS = [
+      { id: '1', username: 'admin', password: '123', name: 'Thiago Soares', role: 'ADMIN' },
+      { id: '2', username: 'carlos', password: '123', name: 'Carlos Oliveira', role: 'ALMOXARIFE' },
+      { id: '3', username: 'roberto', password: '123', name: 'Roberto Lima', role: 'TECNICO' }
+    ];
+
+    const DEFAULT_MATERIALS = [
+      {
+        id: '1',
+        code: 'MAT-1001',
+        name: 'Válvula de Controle Hidráulico',
+        partNumber: 'VCH-550-B',
+        serialNumber: 'SN-984210',
+        quantity: 15,
+        certificate: { name: 'Certificado_Qualidade_VCH550.pdf', fileData: null },
+        updatedAt: '2026-11-01 14:30',
+        createdUser: 'Thiago Soares'
+      },
+      {
+        id: '2',
+        code: 'MAT-1002',
+        name: 'Sensor de Pressão Alta Precisão',
+        partNumber: 'SPP-012-X',
+        serialNumber: 'SN-441209',
+        quantity: 3,
+        certificate: { name: 'Cert_Calibracao_SPP.pdf', fileData: null },
+        updatedAt: '2026-11-05 09:15',
+        createdUser: 'Carlos Oliveira'
+      }
+    ];
+
+    const DEFAULT_LOGS = [
+      {
+        id: 'l1',
+        timestamp: '2026-11-01 14:30',
+        type: 'ENTRY',
+        materialName: 'Válvula de Controle Hidráulico',
+        code: 'MAT-1001',
+        serialNumber: 'SN-984210',
+        quantity: 15,
+        user: 'Thiago Soares',
+        role: 'Administrador',
+        productMp: '-',
+        columnNo: '-',
+        reason: 'Entrada inicial de lote'
+      },
+      {
+        id: 'l2',
+        timestamp: '2026-11-05 09:15',
+        type: 'ENTRY',
+        materialName: 'Sensor de Pressão Alta Precisão',
+        code: 'MAT-1002',
+        serialNumber: 'SN-441209',
+        quantity: 5,
+        user: 'Carlos Oliveira',
+        role: 'Almoxarife',
+        productMp: '-',
+        columnNo: '-',
+        reason: 'Compra emergencial'
+      },
+      {
+        id: 'l3',
+        timestamp: '2026-11-08 11:20',
+        type: 'EXIT',
+        materialName: 'Sensor de Pressão Alta Precisão',
+        code: 'MAT-1002',
+        serialNumber: 'SN-441209',
+        quantity: 2,
+        user: 'Roberto Lima',
+        role: 'Técnico',
+        productMp: 'Dutasterida 0.5mg',
+        columnNo: 'COL-HPLC-04',
+        reason: 'Análise de Rotina / Limpeza'
+      }
+    ];
+
+    function App() {
+      // Estado de Autenticação Geral
+      const [currentUser, setCurrentUser] = useState(null);
+      const [loginUserInput, setLoginUserInput] = useState('');
+      const [loginPassInput, setLoginPassInput] = useState('');
+      const [loginError, setLoginError] = useState('');
+
+      // Dados Principais Inicializados com fallback robusto garantindo admin/123 sempre
+      const [users, setUsers] = useState(() => {
+        try {
+          const saved = localStorage.getItem('stockmaster_users');
+          if (!saved) return DEFAULT_USERS;
+          const parsed = JSON.parse(saved);
+          if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_USERS;
+          const hasAdmin = parsed.some(u => String(u.username).trim().toLowerCase() === 'admin');
+          if (!hasAdmin) {
+            return [DEFAULT_USERS[0], ...parsed];
+          }
+          return parsed;
+        } catch (e) {
+          return DEFAULT_USERS;
+        }
+      });
+
+      const [materials, setMaterials] = useState(() => {
+        try {
+          const saved = localStorage.getItem('stockmaster_materials');
+          return saved ? JSON.parse(saved) : DEFAULT_MATERIALS;
+        } catch(e) { return DEFAULT_MATERIALS; }
+      });
+
+      const [logs, setLogs] = useState(() => {
+        try {
+          const saved = localStorage.getItem('stockmaster_logs');
+          return saved ? JSON.parse(saved) : DEFAULT_LOGS;
+        } catch(e) { return DEFAULT_LOGS; }
+      });
+
+      const [activeTab, setActiveTab] = useState('inventory');
+      
+      // Buscas
+      const [searchQuery, setSearchQuery] = useState('');
+      const [historySearchQuery, setHistorySearchQuery] = useState('');
+      
+      // Modais
+      const [showNewModal, setShowNewModal] = useState(false);
+      const [showExitModal, setShowExitModal] = useState(false);
+      const [showUserModal, setShowUserModal] = useState(false);
+      const [selectedMaterial, setSelectedMaterial] = useState(null);
+
+      // Credenciais exigidas para Ações Críticas (Entrada / Saída)
+      const [authModalType, setAuthModalType] = useState(null);
+      const [authUsername, setAuthUsername] = useState('');
+      const [authPassword, setAuthPassword] = useState('');
+      const [authError, setAuthError] = useState('');
+
+      // Form Cadastro de Usuário (Modo Admin)
+      const [newUserForm, setNewUserForm] = useState({
+        username: '',
+        password: '',
+        name: '',
+        role: 'ALMOXARIFE'
+      });
+
+      // Form Novo Item
+      const [newForm, setNewForm] = useState({
+        code: '',
+        name: '',
+        partNumber: '',
+        serialNumber: '',
+        quantity: 1
+      });
+      const [selectedFile, setSelectedFile] = useState(null);
+
+      // Form Baixa
+      const [exitQuantity, setExitQuantity] = useState(1);
+      const [exitProductMp, setExitProductMp] = useState('');
+      const [exitColumnNo, setExitColumnNo] = useState('');
+      const [exitReason, setExitReason] = useState('');
+
+      // Sincronizar dados no LocalStorage sempre que houver alteração
+      useEffect(() => {
+        try {
+          localStorage.setItem('stockmaster_users', JSON.stringify(users));
+        } catch(e) {}
+      }, [users]);
+
+      useEffect(() => {
+        try {
+          localStorage.setItem('stockmaster_materials', JSON.stringify(materials));
+        } catch(e) {}
+      }, [materials]);
+
+      useEffect(() => {
+        try {
+          localStorage.setItem('stockmaster_logs', JSON.stringify(logs));
+        } catch(e) {}
+      }, [logs]);
+
+      // Efetuar Login no Sistema com trim() para ignorar espaços acidentais
+      const handleSystemLogin = (e) => {
+        e.preventDefault();
+        const cleanUser = loginUserInput.trim().toLowerCase();
+        const cleanPass = loginPassInput.trim();
+
+        const found = users.find(u => 
+          String(u.username).trim().toLowerCase() === cleanUser && 
+          String(u.password).trim() === cleanPass
+        );
+
+        if (found) {
+          setCurrentUser(found);
+          setLoginError('');
+          setLoginUserInput('');
+          setLoginPassInput('');
+        } else {
+          setLoginError('Usuário ou senha incorretos! (Dica: Use "admin" e "123" ou clique no botão de emergência abaixo para Resetar Dados).');
+        }
+      };
+
+      // Logout
+      const handleLogout = () => {
+        setCurrentUser(null);
+        setActiveTab('inventory');
+      };
+
+      // Forçar Reset Completo do Cache Local (Botão de Emergência na tela de Login)
+      const handleEmergencyReset = () => {
+        try {
+          localStorage.removeItem('stockmaster_users');
+          localStorage.removeItem('stockmaster_materials');
+          localStorage.removeItem('stockmaster_logs');
+        } catch(e) {}
+        setUsers(DEFAULT_USERS);
+        setMaterials(DEFAULT_MATERIALS);
+        setLogs(DEFAULT_LOGS);
+        setLoginError('');
+        alert('O cache local foi limpo e o usuário "admin" com a senha "123" foi restaurado com sucesso!');
+      };
+
+      // Cadastrar Novo Usuário (Apenas Admin)
+      const handleCreateUser = (e) => {
+        e.preventDefault();
+        const cleanUsername = newUserForm.username.trim();
+        const cleanPassword = newUserForm.password.trim();
+        const cleanName = newUserForm.name.trim();
+
+        if (!cleanUsername || !cleanPassword || !cleanName) return;
+        
+        if (users.some(u => String(u.username).trim().toLowerCase() === cleanUsername.toLowerCase())) {
+          alert('Nome de usuário (Login) já existe!');
+          return;
+        }
+
+        const newUser = {
+          id: Date.now().toString(),
+          username: cleanUsername,
+          password: cleanPassword,
+          name: cleanName,
+          role: newUserForm.role
+        };
+
+        setUsers(prevUsers => [...prevUsers, newUser]);
+        setNewUserForm({ username: '', password: '', name: '', role: 'ALMOXARIFE' });
+        alert(`Usuário "${newUser.name}" cadastrado e salvo com sucesso no navegador!`);
+      };
+
+      // Excluir Usuário
+      const handleDeleteUser = (id) => {
+        if (id === currentUser.id) {
+          alert('Você não pode excluir seu próprio usuário logado!');
+          return;
+        }
+        if (confirm('Tem certeza que deseja excluir este usuário?')) {
+          setUsers(users.filter(u => u.id !== id));
+        }
+      };
+
+      // Validar Credenciais antes de autorizar Entrada ou Saída
+      const verifyActionCredentials = () => {
+        const cleanAuthUser = authUsername.trim().toLowerCase();
+        const cleanAuthPass = authPassword.trim();
+
+        const authUser = users.find(
+          u => String(u.username).trim().toLowerCase() === cleanAuthUser && String(u.password).trim() === cleanAuthPass
+        );
+
+        if (!authUser) {
+          setAuthError('Usuário ou senha inválidos para autorização.');
+          return null;
+        }
+
+        const userRoleConfig = ROLES[authUser.role];
+
+        if (authModalType === 'ENTRY' && !userRoleConfig.canAdd) {
+          setAuthError(`O usuário ${authUser.name} (${userRoleConfig.name}) não tem permissão para dar entrada.`);
+          return null;
+        }
+
+        if (authModalType === 'EXIT' && !userRoleConfig.canExit) {
+          setAuthError(`O usuário ${authUser.name} (${userRoleConfig.name}) não tem permissão para dar baixa.`);
+          return null;
+        }
+
+        setAuthError('');
+        return authUser;
+      };
+
+      const handleFileChange = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            setSelectedFile({
+              name: file.name,
+              data: event.target.result
+            });
+          };
+          reader.readAsDataURL(file);
+        }
+      };
+
+      // Confirmar Entrada de Material
+      const handleConfirmEntry = (e) => {
+        e.preventDefault();
+        const authUser = verifyActionCredentials();
+        if (!authUser) return;
+
+        const now = new Date().toISOString().replace('T', ' ').substring(0, 16);
+        const newItem = {
+          id: Date.now().toString(),
+          code: newForm.code,
+          name: newForm.name,
+          partNumber: newForm.partNumber || 'N/A',
+          serialNumber: newForm.serialNumber,
+          quantity: parseInt(newForm.quantity, 10),
+          certificate: selectedFile ? { name: selectedFile.name, fileData: selectedFile.data } : null,
+          updatedAt: now,
+          createdUser: authUser.name
+        };
+
+        const newLog = {
+          id: Date.now().toString() + '-log',
+          timestamp: now,
+          type: 'ENTRY',
+          materialName: newItem.name,
+          code: newItem.code,
+          serialNumber: newItem.serialNumber,
+          quantity: newItem.quantity,
+          user: authUser.name,
+          role: ROLES[authUser.role].name,
+          productMp: '-',
+          columnNo: '-',
+          reason: 'Cadastro e Entrada Inicial'
+        };
+
+        setMaterials([newItem, ...materials]);
+        setLogs([newLog, ...logs]);
+        setShowNewModal(false);
+        setNewForm({ code: '', name: '', partNumber: '', serialNumber: '', quantity: 1 });
+        setSelectedFile(null);
+        setAuthUsername('');
+        setAuthPassword('');
+        setAuthModalType(null);
+      };
+
+      // Confirmar Baixa de Material
+      const handleConfirmExit = (e) => {
+        e.preventDefault();
+        if (!selectedMaterial || exitQuantity <= 0 || exitQuantity > selectedMaterial.quantity) return;
+
+        const authUser = verifyActionCredentials();
+        if (!authUser) return;
+
+        const now = new Date().toISOString().replace('T', ' ').substring(0, 16);
+        const qtyToDeduct = parseInt(exitQuantity, 10);
+
+        setMaterials(materials.map(item => {
+          if (item.id === selectedMaterial.id) {
+            return {
+              ...item,
+              quantity: item.quantity - qtyToDeduct,
+              updatedAt: now
+            };
+          }
+          return item;
+        }));
+
+        const newLog = {
+          id: Date.now().toString() + '-log',
+          timestamp: now,
+          type: 'EXIT',
+          materialName: selectedMaterial.name,
+          code: selectedMaterial.code,
+          serialNumber: selectedMaterial.serialNumber,
+          quantity: qtyToDeduct,
+          user: authUser.name,
+          role: ROLES[authUser.role].name,
+          productMp: exitProductMp || '-',
+          columnNo: exitColumnNo || '-',
+          reason: exitReason || 'Baixa de Material'
+        };
+
+        setLogs([newLog, ...logs]);
+        setShowExitModal(false);
+        setSelectedMaterial(null);
+        setExitQuantity(1);
+        setExitProductMp('');
+        setExitColumnNo('');
+        setExitReason('');
+        setAuthUsername('');
+        setAuthPassword('');
+        setAuthModalType(null);
+      };
+
+      const downloadFile = (cert) => {
+        if (cert.fileData) {
+          const a = document.createElement('a');
+          a.href = cert.fileData;
+          a.download = cert.name;
+          a.click();
+        } else {
+          alert(`Simulação de download do certificado: ${cert.name}`);
+        }
+      };
+
+      const filteredMaterials = materials.filter(m => 
+        m.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        m.code.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        m.serialNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        m.partNumber.toLowerCase().includes(searchQuery.toLowerCase())
+      );
+
+      const filteredLogs = logs.filter(log =>
+        log.materialName.toLowerCase().includes(historySearchQuery.toLowerCase()) ||
+        log.code.toLowerCase().includes(historySearchQuery.toLowerCase()) ||
+        log.serialNumber.toLowerCase().includes(historySearchQuery.toLowerCase()) ||
+        log.user.toLowerCase().includes(historySearchQuery.toLowerCase()) ||
+        (log.productMp && log.productMp.toLowerCase().includes(historySearchQuery.toLowerCase())) ||
+        (log.columnNo && log.columnNo.toLowerCase().includes(historySearchQuery.toLowerCase())) ||
+        (log.reason && log.reason.toLowerCase().includes(historySearchQuery.toLowerCase())) ||
+        log.timestamp.includes(historySearchQuery)
+      );
+
+      // Se não estiver logado, exibe a tela de LOGIN
+      if (!currentUser) {
+        return (
+          <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8">
+              <div className="text-center mb-6">
+                <div className="inline-flex bg-blue-600 p-3 rounded-xl mb-3 text-white">
+                  <Icon name="ShieldCheck" size={32} />
+                </div>
+                <h2 className="text-2xl font-bold text-slate-800">StockMaster Pro</h2>
+                <p className="text-sm text-gray-500">Acesse com suas credenciais de usuário</p>
+                <span className="inline-block mt-2 text-[11px] bg-emerald-100 text-emerald-800 font-semibold px-2.5 py-0.5 rounded-full">
+                  Persistência Local (LocalStorage Ativa)
+                </span>
+              </div>
+
+              {loginError && (
+                <div className="mb-4 bg-red-50 border border-red-200 text-red-600 text-xs p-3 rounded-lg flex flex-col space-y-2">
+                  <div className="flex items-center space-x-2">
+                    <Icon name="AlertCircle" size={16} />
+                    <span>{loginError}</span>
+                  </div>
+                </div>
+              )}
+
+              <form onSubmit={handleSystemLogin} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">Usuário / Login</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ex: admin"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    value={loginUserInput}
+                    onChange={(e) => setLoginUserInput(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">Senha</label>
+                  <input
+                    type="password"
+                    required
+                    placeholder="••••••••"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    value={loginPassInput}
+                    onChange={(e) => setLoginPassInput(e.target.value)}
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-lg text-sm transition shadow"
+                >
+                  Entrar no Sistema
+                </button>
+              </form>
+
+              <div className="mt-6 pt-4 border-t border-gray-100 text-xs text-gray-400 text-center space-y-2">
+                <p className="font-semibold text-gray-500">Credenciais Padrão de Teste:</p>
+                <p><b>Admin:</b> admin / 123</p>
+                <p><b>Almoxarife:</b> carlos / 123</p>
+                <p><b>Técnico:</b> roberto / 123</p>
+                <div className="pt-2">
+                  <button
+                    onClick={handleEmergencyReset}
+                    className="bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 text-[11px] font-semibold px-3 py-1.5 rounded-md transition"
+                  >
+                    Restaurar Usuário Admin Padrão (Limpar Cache)
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      const userRoleDetails = ROLES[currentUser.role] || ROLES.LEITOR;
+
+      return (
+        <div className="min-h-screen bg-gray-100 flex flex-col">
+          {/* Header */}
+          <header className="bg-slate-900 text-white shadow-md">
+            <div className="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
+              <div className="flex items-center space-x-3">
+                <div className="bg-blue-600 p-2 rounded-lg">
+                  <Icon name="Package" className="text-white" size={24} />
+                </div>
+                <div>
+                  <h1 className="font-bold text-lg leading-tight">StockMaster Pro</h1>
+                  <p className="text-xs text-slate-400">Sistema de Controle de Entrada & Saída (LocalStorage Local)</p>
+                </div>
+              </div>
+
+              {/* Informações do Usuário Logado e Ações */}
+              <div className="flex items-center space-x-4">
+                <div className="flex items-center space-x-3 bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700">
+                  <div className="bg-slate-700 p-1.5 rounded-full text-blue-400">
+                    <Icon name="User" size={16} />
+                  </div>
+                  <div className="text-xs">
+                    <span className="font-semibold text-white block">{currentUser.name}</span>
+                    <span className="text-blue-400 text-[10px] uppercase font-bold">{userRoleDetails.name}</span>
+                  </div>
+                </div>
+
+                {userRoleDetails.canManageUsers && (
+                  <button
+                    onClick={() => setShowUserModal(true)}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-2 rounded-lg font-medium flex items-center space-x-1.5 transition shadow"
+                  >
+                    <Icon name="Users" size={15} />
+                    <span>Gerenciar Usuários</span>
+                  </button>
+                )}
+
+                <button
+                  onClick={handleLogout}
+                  title="Sair do Sistema"
+                  className="bg-rose-600 hover:bg-rose-700 text-white p-2 rounded-lg transition"
+                >
+                  <Icon name="LogOut" size={16} />
+                </button>
+              </div>
+            </div>
+          </header>
+
+          {/* Navigation */}
+          <div className="bg-white border-b border-gray-200">
+            <div className="max-w-7xl mx-auto px-4 flex justify-between items-center h-14">
+              <div className="flex space-x-4">
+                <button
+                  onClick={() => setActiveTab('inventory')}
+                  className={`flex items-center space-x-2 px-3 py-2 text-sm font-medium border-b-2 ${
+                    activeTab === 'inventory' 
+                      ? 'border-blue-600 text-blue-600' 
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  <Icon name="Boxes" size={18} />
+                  <span>Estoque Atual ({materials.length})</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('history')}
+                  className={`flex items-center space-x-2 px-3 py-2 text-sm font-medium border-b-2 ${
+                    activeTab === 'history' 
+                      ? 'border-blue-600 text-blue-600' 
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  <Icon name="History" size={18} />
+                  <span>Histórico de Movimentações ({logs.length})</span>
+                </button>
+              </div>
+
+              {activeTab === 'inventory' && userRoleDetails.canAdd && (
+                <button
+                  onClick={() => {
+                    setAuthModalType('ENTRY');
+                    setShowNewModal(true);
+                  }}
+                  className="bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2 rounded-lg font-medium flex items-center space-x-2 transition shadow-sm"
+                >
+                  <Icon name="Plus" size={18} />
+                  <span>Cadastrar Entrada</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Main Content */}
+          <main className="max-w-7xl mx-auto px-4 py-6 flex-1 w-full">
+            {activeTab === 'inventory' && (
+              <div>
+                <div className="mb-4">
+                  <div className="relative">
+                    <Icon name="Search" className="absolute left-3 top-3 text-gray-400" size={18} />
+                    <input
+                      type="text"
+                      placeholder="Buscar por Nome, Código, Part Number ou Serial Number..."
+                      className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
+                  <table className="w-full text-left text-sm border-collapse">
+                    <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 uppercase text-xs font-semibold">
+                      <tr>
+                        <th className="py-3 px-4">Código / Nome</th>
+                        <th className="py-3 px-4">Part Number (P/N)</th>
+                        <th className="py-3 px-4">Serial Number (S/N)</th>
+                        <th className="py-3 px-4 text-center">Quantidade</th>
+                        <th className="py-3 px-4">Certificado</th>
+                        <th className="py-3 px-4">Cadastrado por</th>
+                        <th className="py-3 px-4 text-right">Ação</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {filteredMaterials.length === 0 ? (
+                        <tr>
+                          <td colSpan="7" className="py-8 text-center text-gray-400">
+                            Nenhum material encontrado.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredMaterials.map((item) => (
+                          <tr key={item.id} className="hover:bg-gray-50">
+                            <td className="py-3 px-4">
+                              <div className="font-semibold text-gray-800">{item.name}</div>
+                              <div className="text-xs text-blue-600 font-mono">{item.code}</div>
+                            </td>
+                            <td className="py-3 px-4 font-mono text-gray-600">{item.partNumber}</td>
+                            <td className="py-3 px-4 font-mono text-gray-600">{item.serialNumber}</td>
+                            <td className="py-3 px-4 text-center">
+                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                                item.quantity > 5 ? 'bg-green-100 text-green-800' :
+                                item.quantity > 0 ? 'bg-amber-100 text-amber-800' : 'bg-red-100 text-red-800'
+                              }`}>
+                                {item.quantity} un
+                              </span>
+                            </td>
+                            <td className="py-3 px-4">
+                              {item.certificate ? (
+                                <button
+                                  onClick={() => downloadFile(item.certificate)}
+                                  className="flex items-center space-x-1 text-xs text-blue-600 font-medium hover:underline bg-blue-50 px-2 py-1 rounded border border-blue-200"
+                                >
+                                  <Icon name="FileText" size={14} />
+                                  <span className="truncate max-w-[120px]">{item.certificate.name}</span>
+                                  <Icon name="Download" size={12} />
+                                </button>
+                              ) : (
+                                <span className="text-xs text-gray-400">Sem Anexo</span>
+                              )}
+                            </td>
+                            <td className="py-3 px-4 text-xs text-gray-500">{item.createdUser}</td>
+                            <td className="py-3 px-4 text-right">
+                              {userRoleDetails.canExit ? (
+                                <button
+                                  onClick={() => {
+                                    setSelectedMaterial(item);
+                                    setAuthModalType('EXIT');
+                                    setShowExitModal(true);
+                                  }}
+                                  disabled={item.quantity <= 0}
+                                  className={`text-xs px-3 py-1.5 rounded-md font-medium transition ${
+                                    item.quantity > 0 
+                                      ? 'bg-rose-50 text-rose-600 hover:bg-rose-100 border border-rose-200' 
+                                      : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                                  }`}
+                                >
+                                  Dar Baixa
+                                </button>
+                              ) : (
+                                <span className="text-xs text-gray-400 italic">Sem Permissão</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'history' && (
+              <div>
+                <div className="mb-4">
+                  <div className="relative">
+                    <Icon name="Search" className="absolute left-3 top-3 text-gray-400" size={18} />
+                    <input
+                      type="text"
+                      placeholder="Buscar no histórico por Material, Código, S/N, Responsável, Nível de Acesso, Produto/MP, N° Coluna ou Data..."
+                      className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
+                      value={historySearchQuery}
+                      onChange={(e) => setHistorySearchQuery(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
+                  <div className="p-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+                    <div>
+                      <h2 className="font-semibold text-gray-700">Trilha de Auditoria & Movimentações</h2>
+                      <p className="text-xs text-gray-500">Histórico completo indicando quem executou e autorizou cada operação</p>
+                    </div>
+                    <span className="text-xs font-semibold bg-gray-200 text-gray-700 px-2.5 py-1 rounded-full">
+                      {filteredLogs.length} registro(s)
+                    </span>
+                  </div>
+                  <table className="w-full text-left text-sm border-collapse">
+                    <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 uppercase text-xs font-semibold">
+                      <tr>
+                        <th className="py-3 px-4">Data / Hora</th>
+                        <th className="py-3 px-4">Operação</th>
+                        <th className="py-3 px-4">Material / Código</th>
+                        <th className="py-3 px-4">S/N</th>
+                        <th className="py-3 px-4 text-center">Qtd</th>
+                        <th className="py-3 px-4">Produto/MP</th>
+                        <th className="py-3 px-4">N° da Coluna</th>
+                        <th className="py-3 px-4">Executor Autorizado</th>
+                        <th className="py-3 px-4">Motivo / Observação</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {filteredLogs.length === 0 ? (
+                        <tr>
+                          <td colSpan="9" className="py-8 text-center text-gray-400">
+                            Nenhum registro de movimentação encontrado.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredLogs.map((log) => (
+                          <tr key={log.id} className="hover:bg-gray-50">
+                            <td className="py-3 px-4 text-xs text-gray-500 font-mono">{log.timestamp}</td>
+                            <td className="py-3 px-4">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${
+                                log.type === 'ENTRY' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                              }`}>
+                                {log.type === 'ENTRY' ? 'Entrada (+)' : 'Baixa (-)'}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4">
+                              <div className="font-medium text-gray-800">{log.materialName}</div>
+                              <div className="text-xs text-gray-400 font-mono">{log.code}</div>
+                            </td>
+                            <td className="py-3 px-4 text-xs font-mono text-gray-600">{log.serialNumber}</td>
+                            <td className="py-3 px-4 text-center font-bold text-gray-800">{log.quantity}</td>
+                            <td className="py-3 px-4 font-medium text-slate-700">{log.productMp}</td>
+                            <td className="py-3 px-4 font-mono text-slate-600">{log.columnNo}</td>
+                            <td className="py-3 px-4">
+                              <div className="font-medium text-gray-700 text-xs">{log.user}</div>
+                              <div className="text-[10px] text-blue-600 font-semibold">{log.role}</div>
+                            </td>
+                            <td className="py-3 px-4 text-xs text-gray-600">{log.reason}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </main>
+
+          {/* Modal Gerenciamento de Usuários (Somente Administrador) */}
+          {showUserModal && (
+            <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full overflow-hidden">
+                <div className="px-6 py-4 bg-indigo-900 text-white flex justify-between items-center">
+                  <div className="flex items-center space-x-2">
+                    <Icon name="Shield" size={20} />
+                    <h3 className="font-bold text-base">Gerenciamento de Usuários e Permissões</h3>
+                  </div>
+                  <button onClick={() => setShowUserModal(false)} className="text-indigo-200 hover:text-white">✕</button>
+                </div>
+
+                <div className="p-6 space-y-6">
+                  {/* Formulário para Cadastrar Novo Usuário */}
+                  <form onSubmit={handleCreateUser} className="bg-indigo-50/50 p-4 rounded-xl border border-indigo-100 space-y-3">
+                    <h4 className="text-xs font-bold text-indigo-900 uppercase tracking-wider">Cadastrar Novo Usuário</h4>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 mb-1">Nome Completo *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="Ex: Maria Souza"
+                          className="w-full px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          value={newUserForm.name}
+                          onChange={(e) => setNewUserForm({ ...newUserForm, name: e.target.value })}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 mb-1">Usuário / Login *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="Ex: maria.souza"
+                          className="w-full px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          value={newUserForm.username}
+                          onChange={(e) => setNewUserForm({ ...newUserForm, username: e.target.value })}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 mb-1">Senha *</label>
+                        <input
+                          type="password"
+                          required
+                          placeholder="••••••••"
+                          className="w-full px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          value={newUserForm.password}
+                          onChange={(e) => setNewUserForm({ ...newUserForm, password: e.target.value })}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 mb-1">Nível de Acesso *</label>
+                        <select
+                          className="w-full px-3 py-1.5 border border-gray-300 rounded-md text-sm bg-white focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          value={newUserForm.role}
+                          onChange={(e) => setNewUserForm({ ...newUserForm, role: e.target.value })}
+                        >
+                          {Object.values(ROLES).map(r => (
+                            <option key={r.id} value={r.id}>{r.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end pt-2">
+                      <button
+                        type="submit"
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-4 py-2 rounded-lg font-medium transition"
+                      >
+                        + Cadastrar Usuário
+                      </button>
+                    </div>
+                  </form>
+
+                  {/* Lista de Usuários Existentes */}
+                  <div>
+                    <div className="flex justify-between items-center mb-2">
+                      <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wider">Usuários Cadastrados ({users.length})</h4>
+                      <button
+                        type="button"
+                        onClick={handleEmergencyReset}
+                        className="text-[11px] text-amber-700 hover:text-amber-900 underline font-medium"
+                      >
+                        Restaurar Padrões de Fábrica
+                      </button>
+                    </div>
+                    <div className="border border-gray-200 rounded-lg overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-gray-100 text-gray-600 font-semibold border-b">
+                          <tr>
+                            <th className="py-2 px-3">Nome</th>
+                            <th className="py-2 px-3">Login</th>
+                            <th className="py-2 px-3">Nível de Acesso</th>
+                            <th className="py-2 px-3 text-right">Ação</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {users.map(u => (
+                            <tr key={u.id} className="hover:bg-gray-50">
+                              <td className="py-2 px-3 font-medium text-gray-800">{u.name}</td>
+                              <td className="py-2 px-3 font-mono text-gray-600">{u.username}</td>
+                              <td className="py-2 px-3">
+                                <span className="bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded text-[10px]">
+                                  {ROLES[u.role]?.name || u.role}
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 text-right">
+                                <button
+                                  onClick={() => handleDeleteUser(u.id)}
+                                  className="text-red-500 hover:text-red-700 font-medium text-[11px]"
+                                >
+                                  Excluir
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => setShowUserModal(false)}
+                      className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-md"
+                    >
+                      Fechar
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Modal Entrada de Material */}
+          {showNewModal && (
+            <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-xl shadow-xl max-w-lg w-full overflow-hidden">
+                <div className="px-6 py-4 bg-slate-900 text-white flex justify-between items-center">
+                  <h3 className="font-bold text-base">Cadastrar Nova Entrada de Material</h3>
+                  <button onClick={() => setShowNewModal(false)} className="text-slate-400 hover:text-white">✕</button>
+                </div>
+                <form onSubmit={handleConfirmEntry} className="p-6 space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-600 mb-1">Código do Material *</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Ex: MAT-1003"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                        value={newForm.code}
+                        onChange={(e) => setNewForm({ ...newForm, code: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-600 mb-1">Quantidade *</label>
+                      <input
+                        type="number"
+                        min="1"
+                        required
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                        value={newForm.quantity}
+                        onChange={(e) => setNewForm({ ...newForm, quantity: e.target.value })}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Nome do Material *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: Coluna Cromatográfica C18"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                      value={newForm.name}
+                      onChange={(e) => setNewForm({ ...newForm, name: e.target.value })}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-600 mb-1">Part Number (P/N)</label>
+                      <input
+                        type="text"
+                        placeholder="Ex: PN-992-A"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                        value={newForm.partNumber}
+                        onChange={(e) => setNewForm({ ...newForm, partNumber: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-600 mb-1">Serial Number (S/N) *</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Ex: SN-001928"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                        value={newForm.serialNumber}
+                        onChange={(e) => setNewForm({ ...newForm, serialNumber: e.target.value })}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Anexar Certificado do Material</label>
+                    <div className="mt-1 flex items-center justify-center px-4 py-3 border-2 border-dashed border-gray-300 rounded-md bg-gray-50 hover:bg-gray-100 transition cursor-pointer relative">
+                      <input
+                        type="file"
+                        accept=".pdf,.png,.jpg,.jpeg,.doc,.docx"
+                        onChange={handleFileChange}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                      />
+                      <div className="text-center">
+                        <Icon name="UploadCloud" className="mx-auto text-blue-500 mb-1" size={24} />
+                        <span className="text-xs font-medium text-gray-700">
+                          {selectedFile ? `Arquivo: ${selectedFile.name}` : 'Selecione o arquivo'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* SEÇÃO OBRIGATÓRIA DE AUTENTICAÇÃO */}
+                  <div className="bg-amber-50 border border-amber-200 p-3 rounded-lg space-y-2">
+                    <div className="flex items-center space-x-2 text-amber-800 text-xs font-bold">
+                      <Icon name="Lock" size={14} />
+                      <span>Autenticação de Segurança Obrigatória para Entrada</span>
+                    </div>
+
+                    {authError && (
+                      <p className="text-[11px] text-red-600 font-semibold">{authError}</p>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-medium text-amber-900">Login *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="Seu usuário"
+                          className="w-full px-2.5 py-1.5 border border-amber-300 rounded text-xs bg-white focus:outline-none"
+                          value={authUsername}
+                          onChange={(e) => setAuthUsername(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-amber-900">Senha *</label>
+                        <input
+                          type="password"
+                          required
+                          placeholder="Sua senha"
+                          className="w-full px-2.5 py-1.5 border border-amber-300 rounded text-xs bg-white focus:outline-none"
+                          value={authPassword}
+                          onChange={(e) => setAuthPassword(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-3 border-t flex justify-end space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowNewModal(false)}
+                      className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-md"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md font-medium hover:bg-blue-700"
+                    >
+                      Autorizar & Confirmar Entrada
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* Modal Baixa de Material */}
+          {showExitModal && selectedMaterial && (
+            <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-xl shadow-xl max-w-md w-full overflow-hidden">
+                <div className="px-6 py-4 bg-rose-600 text-white flex justify-between items-center">
+                  <h3 className="font-bold text-base">Dar Baixa de Material</h3>
+                  <button onClick={() => setShowExitModal(false)} className="text-rose-100 hover:text-white">✕</button>
+                </div>
+                <form onSubmit={handleConfirmExit} className="p-6 space-y-4">
+                  <div className="bg-rose-50 border border-rose-100 p-3 rounded-lg text-sm">
+                    <div className="font-bold text-gray-800">{selectedMaterial.name}</div>
+                    <div className="text-xs text-gray-500 font-mono mt-1">S/N: {selectedMaterial.serialNumber} | Estoque Disponível: <b>{selectedMaterial.quantity} un</b></div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Quantidade a retirar *</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max={selectedMaterial.quantity}
+                      required
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-rose-500 focus:outline-none"
+                      value={exitQuantity}
+                      onChange={(e) => setExitQuantity(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-600 mb-1">Produto / MP *</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Ex: Dutasterida"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-rose-500 focus:outline-none"
+                        value={exitProductMp}
+                        onChange={(e) => setExitProductMp(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-600 mb-1">N° da Coluna *</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Ex: COL-C18-02"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-rose-500 focus:outline-none"
+                        value={exitColumnNo}
+                        onChange={(e) => setExitColumnNo(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Motivo / Observação *</label>
+                    <textarea
+                      required
+                      rows="2"
+                      placeholder="Ex: Utilizado na análise de validação de limpeza"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-rose-500 focus:outline-none"
+                      value={exitReason}
+                      onChange={(e) => setExitReason(e.target.value)}
+                    />
+                  </div>
+
+                  {/* SEÇÃO OBRIGATÓRIA DE AUTENTICAÇÃO */}
+                  <div className="bg-amber-50 border border-amber-200 p-3 rounded-lg space-y-2">
+                    <div className="flex items-center space-x-2 text-amber-800 text-xs font-bold">
+                      <Icon name="Lock" size={14} />
+                      <span>Autenticação de Segurança Obrigatória para Baixa</span>
+                    </div>
+
+                    {authError && (
+                      <p className="text-[11px] text-red-600 font-semibold">{authError}</p>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-medium text-amber-900">Login *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="Seu usuário"
+                          className="w-full px-2.5 py-1.5 border border-amber-300 rounded text-xs bg-white focus:outline-none"
+                          value={authUsername}
+                          onChange={(e) => setAuthUsername(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-amber-900">Senha *</label>
+                        <input
+                          type="password"
+                          required
+                          placeholder="Sua senha"
+                          className="w-full px-2.5 py-1.5 border border-amber-300 rounded text-xs bg-white focus:outline-none"
+                          value={authPassword}
+                          onChange={(e) => setAuthPassword(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-3 border-t flex justify-end space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowExitModal(false)}
+                      className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-md"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 text-sm bg-rose-600 text-white rounded-md font-medium hover:bg-rose-700"
+                    >
+                      Autorizar & Confirmar Baixa
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
